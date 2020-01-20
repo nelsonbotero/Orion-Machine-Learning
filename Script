@@ -1,0 +1,1288 @@
+/*****************************************************************************/
+/*  Define project marco variables                                           */
+/*****************************************************************************/
+
+/*****************************************************************************/
+/*  change /home/gde/ by /sas-mooc/sasmoocxxxx/		     					 */
+/*   where xxxx is your number                                               */
+/*****************************************************************************/
+%let Pathtolocal=/sas-mooc/sasmooc1009/	;
+
+
+/*****************************************************************************/
+/*  Start a session named mySession using the existing CAS server connection */
+/*  while allowing override of caslib, timeout (in seconds), and locale     */
+/*  defaults.                                                                */
+/*****************************************************************************/
+
+cas mySession sessopts=(caslib=casuser timeout=1800 locale="en_US");
+
+/************************************************************************/
+/* Library								*/
+/************************************************************************/
+
+libname orion  '/home/data/OrionG';
+libname caslibr cas caslib=casuser;
+
+/************************************************************************/
+/* Load a table from orion to the Caslibr 				*/
+/************************************************************************/
+%if not %sysfunc(exist(order_fact)) %then %do;
+  proc casutil;
+    load data=orion.order_fact casout="order_fact";
+  run;
+%end;
+%if not %sysfunc(exist(customer_dim)) %then %do;
+  proc casutil;
+    load data=orion.customer_dim casout="customer_dim";
+  run;
+%end;
+%if not %sysfunc(exist(product_dim)) %then %do;
+  proc casutil;
+    load data=orion.product_dim casout="product_dim";
+  run;
+%end;
+%if not %sysfunc(exist(time_dim)) %then %do;
+  proc casutil;
+    load data=orion.time_dim casout="time_dim";
+  run;
+%end;
+
+
+%macro droptable(tabName=);
+ proc casutil;
+ 		droptable casdata="&tabName." quiet;
+ 		
+ 	run;
+ %mend droptable;
+/************************************************************************/
+/* First part : Create the training and validation table		*/
+/************************************************************************/
+
+/************************************************************************/
+/* Create the table before end of December 2016 with all needed columns */
+/************************************************************************/
+
+%droptable(tabName=BeforeDec);
+
+/*PROC cas;
+fedsql.execdirect query="DROP TABLE BeforeDec";
+QUIT;*/
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE table BeforeDec AS 
+   SELECT t1.Customer_ID, 
+          t1.Total_Retail_Price, 
+          t2.Customer_Country, 
+          t2.Customer_Gender,
+          t2.customer_age,
+		  t2.customer_Type,
+          t3.Product_Group,
+		  t3.Product_Category, 
+          t4.Year_ID, 
+          t4.Month_Name, 
+          t1.Order_Date,
+          t1.Order_ID,
+          t1.Discount,
+		  t4.WeekDay_Name 
+      FROM order_fact t1, customer_dim t2, product_dim t3, time_dim t4
+      WHERE (t1.Customer_ID = t2.Customer_ID AND t1.Product_ID = t3.Product_ID AND t1.Order_Date = t4.Date_id) 
+      AND t1.Order_Date <= date'2016-12-31'";
+QUIT; /*WeekDay_Name ajoutée*/
+
+/************************************************************************/
+/* Create the Base table						*/
+/************************************************************************/
+
+%droptable(tabName=BaseTable);
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE BaseTable AS 
+   SELECT t1.Customer_ID,
+            (SUM(t1.Total_Retail_Price)) AS SUM_of_Total_Retail_Price, 
+            (MEAN(t1.Total_Retail_Price)) AS MEAN_of_Total_Retail_Price, 
+            (MAX(t1.Total_Retail_Price))  AS MAX_of_Total_Retail_Price, 
+          t1.Customer_Country,
+          (t1.customer_age -1) as age,
+          t1.Customer_Gender,
+		  t1.Customer_Type, 
+          (MEAN(t1.Discount)) AS MEAN_of_Discount1
+      FROM BeforeDec t1
+        GROUP BY t1.Customer_ID,
+               t1.Customer_Country,
+               t1.customer_age,
+			   t1.Customer_Type,
+               t1.Customer_Gender";
+QUIT;
+
+
+/************************************************************************/
+/* Turnover per year 							*/
+/************************************************************************/
+%droptable(tabName=T_Y);
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE  T_Y AS SELECT
+         (SUM(t1.Total_Retail_Price)) AS SUM_of_Total_Retail_Price, 
+          T1.Customer_ID, 
+          t1.Year_ID
+      FROM BeforeDec t1
+      GROUP BY t1.Customer_ID,
+               t1.Year_ID";
+ QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_Y
+	OUT=  caslibr.trnst_T_Y
+	PREFIX=_
+	NAME=Source;
+	BY Customer_ID;
+	ID Year_ID;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* Turnover per month                                          */
+/************************************************************************/
+%droptable(tabName=T_M);
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE T_M AS 
+   SELECT t1.Customer_ID, 
+          t1.Month_Name, 
+            (SUM(t1.Total_Retail_Price))  AS SUM_of_Total_Retail_Price
+      FROM   BeforeDec t1
+      GROUP BY t1.Customer_ID,
+               t1.Month_Name";
+QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_M
+	OUT=  caslibr.trnst_T_M
+	NAME=Source;
+	BY Customer_ID;
+	ID Month_Name;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* Turnover per weekday                                                 */
+/************************************************************************/
+%droptable(tabName=T_WD);
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE T_WD AS 
+   SELECT t1.Customer_ID, 
+          t1.WeekDay_Name, 
+            (SUM(t1.Total_Retail_Price))  AS SUM_of_Total_Retail_Price
+      FROM   BeforeDec t1
+      GROUP BY t1.Customer_ID,
+               t1.WeekDay_Name";
+QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_WD
+	OUT=  caslibr.trnst_T_WD
+	NAME=Source;
+	BY Customer_ID;
+	ID WeekDay_Name;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* recency and seniority                                               */
+/************************************************************************/
+%droptable(tabName=rec_old1);
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE rec_old1 AS 
+   SELECT t1.Customer_ID,
+            (MIN(t1.Order_Date))  AS MIN_of_Order_Date, 
+            (MAX(t1.Order_Date))  AS MAX_of_Order_Date
+      FROM BeforeDec t1
+      GROUP BY t1.Customer_ID";
+QUIT;
+
+data caslibr.rec_old;
+set caslibr.rec_old1;
+recen = yrdif(MAX_of_Order_Date,'31DEC2016'd,'actual'); 
+Old = yrdif(MIN_of_Order_Date,'31DEC2016'd,'actual');
+run;
+
+/************************************************************************/
+/* Turnover per product group                                   */
+/************************************************************************/
+%droptable(tabName=T_P);
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE  T_P AS SELECT
+         (SUM(t1.Total_Retail_Price)) AS SUM_of_Total_Retail_Price, 
+          T1.Customer_ID, 
+          t1.Product_Group
+      FROM BeforeDec t1
+      GROUP BY t1.Customer_ID,
+               t1.Product_Group";
+ QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_P
+	OUT=  caslibr.trnst_T_P
+	PREFIX=_
+	NAME=Source;
+	BY Customer_ID;
+	ID Product_Group;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* Turnover per product Category                                   */
+/************************************************************************/
+%droptable(tabName=T_PC);
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE  T_PC AS SELECT
+         (SUM(t1.Total_Retail_Price)) AS SUM_of_Total_Retail_Price, 
+          T1.Customer_ID, 
+          t1.Product_Category
+      FROM BeforeDec t1
+      GROUP BY t1.Customer_ID,
+               t1.Product_Category";
+ QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_PC
+	OUT=  caslibr.trnst_T_PC
+	PREFIX=_
+	NAME=Source;
+	BY Customer_ID;
+	ID Product_Category;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* Create the Target Variable						*/
+/************************************************************************/
+%droptable(tabName=Target);
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE   Target AS 
+   SELECT DISTINCT t1.Customer_ID, 
+            (1) AS Target
+      FROM order_fact t1
+      WHERE t1.Order_Date BETWEEN date'2017-02-01' AND date'2017-04-30'";
+QUIT;
+
+/************************************************************************/
+/* Concatenation							*/
+/************************************************************************/
+
+%droptable(tabName=conca);
+
+PROC SQL;
+  CREATE TABLE conca AS 
+   SELECT t1.Customer_ID, 
+          t1.SUM_of_Total_Retail_Price, 
+          t1.MEAN_of_Total_Retail_Price, 
+          t1.MAX_of_Total_Retail_Price, 
+          t1.Customer_Country, 
+          t1.Customer_Gender,
+		  t1.Customer_Type,
+          T1.age,
+          t1.MEAN_of_Discount1, 
+          t2._2013 AS N_4, 
+          t2._2014 AS N_3, 
+          t2._2015 AS N_2, 
+          t2._2016 AS N_1,
+          t3.August, 
+          t3.February, 
+          t3.July, 
+          t3.November, 
+          t3.October, 
+          t3.April, 
+          t3.March, 
+          t3.May, 
+          t3.December, 
+          t3.January, 
+          t3.June, 
+          t3.September,
+		  t8._Clothes,
+		  t8._Shoes,
+          T5.'_Eclipse Clothing'n AS EclipseClothing, 
+          T5.'_Eclipse Shoes'n AS EclipseShoes, 
+          T5._Orion as Orion, 
+          T5._Shoes as Shoes, 
+          T5.'_T-Shirts'n AS TShirts, 
+          T5.'_Tracker Clothes'n AS TrackerClothes, 
+          T5.'_Tracker Shoes'n AS TrackerShoes, 
+          T5.'_Orion Clothing'n AS OrionClothing, 
+          T5._Leisure as Leisure, 
+          T5._Osprey as Osprey, 
+          T5.'_Green Tomato'n AS GreenTomato, 
+          T5._LSF as LSF, 
+          T5._Knitwear as Knitwear, 
+          T5.'_Street Wear'n AS StreetWear, 
+          T5._Shorts as Shorts, 
+          T5.'_Stockings & Socks'n AS StockingsSocks, 
+          t4.recen,
+          t4.Old,
+		  t7.Monday,
+		  t7.Tuesday,
+		  t7.Wednesday,
+		  t7.Thursday,
+		  t7.Friday,
+		  t7.Saturday,
+		  t7.Sunday,
+          t6.Target
+		  
+      FROM   caslibr.BaseTable t1
+           INNER JOIN   caslibr.trnst_T_Y t2 ON (t1.Customer_ID = t2.Customer_ID)
+           INNER JOIN   caslibr.trnst_T_M t3 ON (t1.Customer_ID = t3.Customer_ID)
+     	   INNER JOIN   caslibr.rec_old T4 ON (t1.Customer_ID = t4.Customer_ID)
+     	   INNER JOIN   caslibr.trnst_T_P T5 ON (t1.Customer_ID = t5.Customer_ID)
+		   INNER JOIN   caslibr.trnst_T_PC T8 ON (t1.Customer_ID = t8.Customer_ID)
+		   INNER JOIN  	caslibr.trnst_T_WD T7 ON (t1.Customer_ID = t7.Customer_ID)
+           LEFT JOIN   caslibr.Target t6 ON (t1.Customer_ID = t6.Customer_ID);
+ QUIT;
+
+ proc casutil;
+    load data=work.conca casout="conca";
+  run;
+
+/************************************************************************/
+/* Imputation Missing Values                                    */
+/************************************************************************/
+
+data caslibr.Orion_DM;
+set caslibr.conca;
+if MEAN_of_Discount1 = . THEN MEAN_of_Discount1 = 0;
+if N_1 = . THEN N_1 = 0;
+if N_2 = . THEN N_2 = 0;
+if N_3 = . THEN N_3 = 0;
+if N_4 = . THEN N_4 = 0;
+if August = . THEN August = 0;
+if February = . THEN February = 0;
+if July = . THEN July = 0;
+if November = . THEN November = 0;
+if October = . THEN October = 0;
+if April = . THEN April = 0;
+if March = . THEN March = 0;
+if May = . THEN May = 0;
+if December = . THEN December = 0;
+if January = . THEN January = 0;
+if June = . THEN June = 0;
+if September = . THEN September = 0;
+if EclipseShoes = . THEN EclipseShoes = 0;
+if _Shoes = . THEN _Shoes = 0;
+if _Clothes= . THEN _CLothes =0;
+if EclipseClothing = . THEN EclipseClothing = 0;
+if Orion= . THEN Orion = 0;
+if Shoes= . THEN Shoes = 0;
+if TShirts = . THEN TShirts = 0;
+if TrackerClothes = . THEN TrackerClothes = 0;
+if TrackerShoes = . THEN TrackerShoes = 0;
+if OrionClothing = . THEN OrionClothing = 0;
+if Leisure = . THEN Leisure = 0;
+if Osprey = . THEN Osprey = 0;
+if GreenTomato = . THEN GreenTomato = 0;
+if LSF = . THEN LSF = 0;
+if Knitwear = . THEN Knitwear = 0;
+if StreetWear = . THEN StreetWear = 0;
+if Shorts = . THEN Shorts = 0;
+if StockingsSocks = . THEN StockingsSocks = 0;
+if Monday = . THEN Monday = 0;
+if Tuesday = . THEN Tuesday = 0;
+if Wednesday = . THEN Wednesday = 0;
+if Thursday = . THEN Thursday = 0;
+if Friday = . THEN Friday = 0;
+if Saturday = . THEN Saturday = 0;
+if Sunday = . THEN Sunday = 0;
+if Target = . THEN Target = 0;
+run;
+
+
+/************************************************************************/
+/* Transform								*/
+/************************************************************************/
+
+data CASLIBR.Orion_DM_Log;
+	set CASLIBR.Orion_DM;
+	log_SUM_of_Total_Retail_Price=log(SUM_of_Total_Retail_Price+1);
+	log_N_4=log(N_4+1);
+	log_N_3=log(N_3+1);
+	log_N_2=log(N_2+1);
+	log_N_1=log(N_1+1);
+	log_August=log(August+1);
+	log_February=log(February+1);
+	log_July=log(July+1);
+	log_November=log(November+1);
+	log_October=log(October+1);
+	log_April=log(April+1);
+	log_March=log(March+1);
+	log_May=log(May+1);
+	log_December=log(December+1);
+	log_January=log(January+1);
+	log_June=log(June+1);
+	log_September =log(September+1);
+	log_ShoesC=log(_Shoes+1);
+	log_ClothesC=log(_Clothes+1);
+	log_EclipseShoes=log(EclipseShoes+1);
+	log_EclipseClothing=log(EclipseClothing+1);
+	log_Orion=log(Orion+1);
+	log_Shoes=log(Shoes+1);
+	log_TShirts=log(TShirts+1);
+	log_TrackerClothes=log(TrackerClothes+1);
+	log_TrackerShoes=log(TrackerShoes+1);
+	log_OrionClothing=log(OrionClothing+1);
+	log_Leisure=log(Leisure+1);
+	log_Osprey=log(Osprey+1);
+	log_GreenTomato=log(GreenTomato+1);
+	log_LSF =log(LSF+1);
+	log_Knitwear=log(Knitwear+1);
+	log_StreetWear=log(StreetWear+1);
+	log_Shorts=log(Shorts+1);
+	log_StockingsSocks=log(StockingsSocks+1);
+	log_Monday=log(Monday+1);
+	log_Tuesday=log(Tuesday+1);
+	log_Wednesday=log(Wednesday+1);
+	log_Thursday=log(Thursday+1);
+	log_Friday=log(Friday+1);
+	log_Saturday=log(Saturday+1);	
+	log_Sunday=log(Sunday+1);
+run;
+
+/************************************************************************/
+/* Second part : Modeling	                                        */
+/************************************************************************/
+
+
+/************************************************************************/
+/* Partition : 70% training (0) et 30% validation (1)          		*/
+/************************************************************************/
+proc partition data=CASLIBR.Orion_DM_Log partition samppct=30 seed=29579;
+  by Target;
+  output out=caslibr.ORION_DM_LOG_P copyvars=(_ALL_);
+run;
+
+
+/************************************************************************/
+/* logistic Regression                                                	*/
+/************************************************************************/
+
+proc logselect data=CASLIBR.ORION_DM_LOG_P;
+	partition role=_PartInd_ (validate='1');
+	class Customer_Country Customer_Gender Customer_Type;
+	model Target(event='1')=
+		Customer_Country 
+		Customer_Gender  
+		Customer_Type
+		MEAN_OF_TOTAL_RETAIL_PRICE 
+		MAX_OF_TOTAL_RETAIL_PRICE 
+		MEAN_OF_DISCOUNT1
+		recen
+		Old
+		age
+		log_Shoes
+		log_SUM_of_Total_Retail_Price
+		log_N_4 
+		log_N_3 
+		log_N_2 
+		log_N_1 
+		log_August 
+		log_February 
+		log_July 
+		log_November 
+		log_October 
+		log_April 
+		log_March 
+		log_May 
+		log_December 
+		log_January 
+		log_June 
+		log_September 
+		log_EclipseShoes  
+		log_EclipseClothing  
+		log_Orion  
+		log_Shoes  
+		log_TShirts  
+		log_TrackerClothes
+		log_TrackerShoes  
+		log_OrionClothing  
+		log_Leisure  
+		log_Osprey  
+		log_GreenTomato  
+		log_LSF  
+		log_Knitwear  
+		log_StreetWear  
+		log_Shorts  
+		log_StockingsSocks 
+		log_Monday  
+		log_Tuesday
+		log_Wednesday
+		log_Thursday
+		log_Friday
+		log_Saturday
+		log_Sunday 
+		log_ClothesC
+		log_ShoesC
+		/ link=logit;
+	selection method=stepwise
+        (stop=sbc choose=sbc) hierarchy=none;
+	code file= "&Pathtolocal/score_Reg.sas";
+run;
+
+
+
+data CASLIBR._scored_Log_i;
+	set CASLIBR.ORION_DM_LOG_P;
+	%include "&Pathtolocal/score_Reg.sas";
+run;
+
+data CASLIBR._scored_Log;
+	set CASLIBR._scored_Log_i;
+	p_Target1=p_Target;
+	p_Target0=1-p_Target;
+run;
+
+/************************************************************************/
+/* Tree			                                                */
+/************************************************************************/
+
+proc treesplit data=CASLIBR.ORION_DM_LOG_P;
+	partition role=_PartInd_ (validate='1');
+	input  
+		MEAN_OF_TOTAL_RETAIL_PRICE MAX_OF_TOTAL_RETAIL_PRICE 
+		MEAN_OF_DISCOUNT1 recen Old age
+		/*log_SUM_of_Total_Retail_Price log_N_4 log_N_3 log_N_2 log_N_1  
+		log_February log_July log_November log_October log_April log_March log_May 
+		log_December log_January log_June log_September */
+		EclipseShoes  EclipseClothing  Orion  Shoes  TShirts  TrackerClothes
+		TrackerShoes  OrionClothing  Leisure  Osprey  GreenTomato  LSF  Knitwear  
+		StreetWear  Shorts  StockingsSocks Monday  
+		Tuesday
+		Wednesday
+		Thursday
+		Friday
+		Saturday
+		Sunday
+		_Clothes
+		_Shoes/ level=interval;
+	input Customer_Country Customer_Gender Customer_Type/ level=nominal;
+	target Target / level=nominal;
+	grow igr;
+	prune none;
+	code file="&Pathtolocal/score_Tree.sas";
+run;
+
+data CASLIBR._scored_Tree;
+	set CASLIBR.ORION_DM_LOG_P;
+	%include "&Pathtolocal/score_Tree.sas";
+run;
+/************************************************************************/
+/* Forest			                                                */
+/************************************************************************/
+
+
+
+proc forest data=CASLIBR.ORION_DM_LOG_P;
+	partition role=_PartInd_ (validate='1');
+	target TARGET / level=nominal;
+	input log_SUM_of_Total_Retail_Price log_N_4 log_N_3 log_N_2 log_N_1 log_August 
+		log_February log_July log_November log_October log_April log_March log_May 
+		log_December log_January log_June log_September log_ShoesC log_ClothesC 
+		log_EclipseShoes log_EclipseClothing log_Orion log_Shoes log_TShirts 
+		log_TrackerClothes log_TrackerShoes log_OrionClothing log_Leisure log_Osprey 
+		log_GreenTomato log_LSF log_Knitwear log_StreetWear log_Shorts 
+		log_StockingsSocks log_Monday log_Tuesday log_Wednesday log_Thursday 
+		log_Friday log_Saturday log_Sunday / level=interval;
+	input Customer_Country Customer_Gender Customer_Type / level=nominal;
+	autotune tuningparameters=(ntrees maxdepth inbagfraction vars_to_try(init=45) 
+		);
+	ods output VariableImportance=Work._Forest_VarImp_;
+	code file="&Pathtolocal/score_Forest.sas";
+run;
+
+data CASLIBR._scored_Forest;
+	set CASLIBR.ORION_DM_LOG_P;
+	%include "&Pathtolocal/score_Forest.sas";
+run;
+
+
+
+
+/************************************************************************/
+/* GB                                                  			*/
+/************************************************************************/
+
+proc gradboost data=CASLIBR.ORION_DM_LOG_P; 
+	partition role=_PartInd_ (validate='1');
+	target Target / level=nominal;
+	input MEAN_OF_TOTAL_RETAIL_PRICE MAX_OF_TOTAL_RETAIL_PRICE AGE 
+		MEAN_OF_DISCOUNT1 recen Old log_SUM_of_Total_Retail_Price log_N_4 log_N_3 
+		log_N_2 log_N_1 log_August log_February log_July log_November log_October 
+		log_April log_March log_May log_December log_January log_June log_September 
+		log_EclipseShoes log_EclipseClothing log_Orion log_Shoes log_TShirts 
+		log_TrackerClothes log_TrackerShoes log_OrionClothing log_Leisure log_Osprey 
+		log_GreenTomato log_LSF log_Knitwear log_StreetWear log_Shorts 
+		log_StockingsSocks 
+		log_Monday  
+		log_Tuesday
+		log_Wednesday
+		log_Thursday
+		log_Friday
+		log_Saturday
+		log_Sunday/ level=interval;
+	input Customer_Country Customer_Gender Customer_Type / level=nominal;
+	autotune tuningparameters=(ntrees samplingrate vars_to_try(init=45) 
+		learningrate lasso ridge ) objective=ks;
+	savestate rstore=CASLIBR.GB;
+	id _all_;
+run;
+
+
+proc astore;
+	score data=CASLIBR.ORION_DM_LOG_P out=CASLIBR._SCORED_GB rstore=CASLIBR.GB;
+run;
+
+
+/************************************************************************/
+/* Neural Network                                                       */
+/************************************************************************/
+libname _tmpcas_ cas;
+
+proc nnet data=CASLIBR.ORION_DM_LOG_P;
+	partition role=_PartInd_ (validate='1');
+	target Target / level=nominal;
+	input 
+		recen Old 
+		log_SUM_of_Total_Retail_Price 
+		log_N_4 
+		log_July 
+		log_April
+		MEAN_OF_DISCOUNT1
+/*MEAN_OF_TOTAL_RETAIL_PRICE MAX_OF_TOTAL_RETAIL_PRICE 
+		MEAN_OF_DISCOUNT1 recen Old age 
+		log_SUM_of_Total_Retail_Price log_N_4 log_N_3 log_N_2 log_N_1  
+		log_February log_July log_November log_October log_April log_March log_May 
+		log_December log_January log_June log_September 
+		log_EclipseShoes  log_EclipseClothing  log_Orion  log_Shoes  log_TShirts  log_TrackerClothes
+		log_TrackerShoes  log_OrionClothing  log_Leisure  log_Osprey  log_GreenTomato  log_LSF  log_Knitwear  
+		log_StreetWear  log_Shorts  log_StockingsSocks log_Monday  
+		log_Tuesday
+		log_Wednesday
+		log_Thursday
+		log_Friday
+		log_Saturday
+		log_Sunday*/
+ / level=interval;
+	/*hidden 46;*/
+	hidden 10;
+	hidden 3;
+	train outmodel=_tmpcas_._Nnet_model_;
+	optimization regL2=0.1;
+	code file="&Pathtolocal/score_NN.sas";
+run;
+
+proc delete data=_tmpcas_._Nnet_model_;
+run;
+
+data CASLIBR._scored_NN;
+	set CASLIBR.ORION_DM_LOG_P;
+	%include "&Pathtolocal/score_NN.sas";
+run;
+
+/************************************************************************/
+/* Assess                                                               */
+/************************************************************************/
+%macro assess_model(prefix=, var_evt=, var_nevt=);
+  proc assess data=caslibr._scored_&prefix.;
+    input &var_evt.;
+    target Target / level=nominal event='1';
+    fitstat pvar=&var_nevt. / pevent='0';
+    by _partind_;
+  
+    ods output
+      fitstat=&prefix._fitstat 
+      rocinfo=&prefix._rocinfo 
+      liftinfo=&prefix._liftinfo;
+run;
+%mend assess_model;
+
+ods exclude all;
+%assess_model(prefix=Log, var_evt=p_Target1, var_nevt=p_Target0);
+%assess_model(prefix=Tree, var_evt=p_Target1, var_nevt=p_Target0);
+%assess_model(prefix=GB, var_evt=p_Target1, var_nevt=p_Target0);
+%assess_model(prefix=NN, var_evt=p_Target1, var_nevt=p_Target0);
+%assess_model(prefix=Forest, var_evt=p_Target1, var_nevt=p_Target0);
+ods exclude none;
+
+
+/************************************************************************/
+/* ROC and Lift Charts using training data                            */
+/************************************************************************/
+ods graphics on;
+
+data all_rocinfo;
+  set Log_rocinfo(keep=sensitivity fpr c _partind_ in=l where=(_partind_=0))
+      Tree_rocinfo(keep=sensitivity fpr c _partind_ in=t where=(_partind_=0))
+      GB_rocinfo(keep=sensitivity fpr c _partind_ in=g where=(_partind_=0))
+      NN_rocinfo(keep=sensitivity fpr c _partind_ in=n where=(_partind_=0))
+	  Forest_rocinfo(keep=sensitivity fpr c _partind_ in=f where=(_partind_=0));
+      
+  length model $ 20;
+  select;
+    when (l) model='Logistic';
+    when (t) model='Tree';
+    when (g) model='Gradient Boosting';
+    when (n) model='Neural Network';
+	when (f) model='Forest';
+     end;
+run;
+
+data all_liftinfo;
+  set Log_liftinfo(keep=depth lift cumlift _partind_ in=l where=(_partind_=0))
+      Tree_liftinfo(keep=depth lift cumlift _partind_ in=t where=(_partind_=0))
+      GB_liftinfo(keep=depth lift cumlift _partind_ in=g where=(_partind_=0))
+      NN_liftinfo(keep=depth lift cumlift _partind_ in=n where=(_partind_=0))
+	  Forest_liftinfo(keep=depth lift cumlift _partind_ in=n where=(_partind_=0));
+      
+  length model $ 20;
+  select;
+    when (l) model='Logistic';
+    when (t) model='Tree';
+    when (g) model='Gradient Boosting';
+    when (n) model='Neural Network';
+	when (f) model='Forest';
+  end;
+run;
+
+title "AUC (using training data)";
+proc sql;
+  select distinct model, c from all_rocinfo order by c desc;
+quit;
+
+/* Draw ROC charts */         
+proc sgplot data=all_rocinfo aspect=1;
+  title "ROC Curve (using  training data)";
+  xaxis values=(0 to 1 by 0.25) grid offsetmin=.05 offsetmax=.05; 
+  yaxis values=(0 to 1 by 0.25) grid offsetmin=.05 offsetmax=.05;
+  lineparm x=0 y=0 slope=1 / transparency=.7;
+  series x=fpr y=sensitivity / group=model;
+run;
+
+/* Draw lift charts */         
+proc sgplot data=all_liftinfo; 
+  title "Lift Chart (using  training data)";
+  yaxis label=' ' grid;
+  series x=depth y=cumlift / group=model markers markerattrs=(symbol=circlefilled);
+run;
+
+title;
+ods graphics off;
+
+
+
+/************************************************************************/
+/* ROC and Lift Charts using validation data                            */
+/************************************************************************/
+ods graphics on;
+
+data all_rocinfo;
+  set Log_rocinfo(keep=sensitivity fpr c _partind_ in=l where=(_partind_=1))
+      Tree_rocinfo(keep=sensitivity fpr c _partind_ in=t where=(_partind_=1))
+      GB_rocinfo(keep=sensitivity fpr c _partind_ in=g where=(_partind_=1))
+      NN_rocinfo(keep=sensitivity fpr c _partind_ in=n where=(_partind_=1))
+	  Forest_rocinfo(keep=sensitivity fpr c _partind_ in=f where=(_partind_=1));
+      
+  length model $ 20;
+  select;
+    when (l) model='Logistic';
+    when (t) model='Tree';
+    when (g) model='Gradient Boosting';
+    when (n) model='Neural Network';
+	when (f) model='Forest';
+     end;
+run;
+
+data all_liftinfo;
+  set Log_liftinfo(keep=depth lift cumlift _partind_ in=l where=(_partind_=1))
+      Tree_liftinfo(keep=depth lift cumlift _partind_ in=t where=(_partind_=1))
+      GB_liftinfo(keep=depth lift cumlift _partind_ in=g where=(_partind_=1))
+      NN_liftinfo(keep=depth lift cumlift _partind_ in=n where=(_partind_=1))
+	  Forest_liftinfo(keep=depth lift cumlift _partind_ in=f where=(_partind_=1));
+      
+  length model $ 20;
+  select;
+    when (l) model='Logistic';
+    when (t) model='Tree';
+    when (g) model='Gradient Boosting';
+    when (n) model='Neural Network';
+	when (f) model='Forest';
+  end;
+run;
+
+title "AUC (using validation data)";
+proc sql;
+  select distinct model, c from all_rocinfo order by c desc;
+quit;
+
+/* Draw ROC charts */         
+proc sgplot data=all_rocinfo aspect=1;
+  title "ROC Curve (using validation data)";
+  xaxis values=(0 to 1 by 0.25) grid offsetmin=.05 offsetmax=.05; 
+  yaxis values=(0 to 1 by 0.25) grid offsetmin=.05 offsetmax=.05;
+  lineparm x=0 y=0 slope=1 / transparency=.7;
+  series x=fpr y=sensitivity / group=model;
+run;
+
+/* Draw lift charts */         
+proc sgplot data=all_liftinfo; 
+  title "Lift Chart (using validation data)";
+  yaxis label=' ' grid;
+  series x=depth y=cumlift / group=model markers markerattrs=(symbol=circlefilled);
+run;
+
+
+title "ROI (using validation data)";
+proc sql;
+    select distinct model,	
+                    cumlift,
+                    ( 16293 * Depth / 100 * (-2 + 6 * (17 /100 * cumlift))) as ROI
+    from all_liftinfo
+    where model='Logistic'
+    order by model, cumlift desc
+    ;
+quit;
+
+proc sql;
+    create table ROI as 
+    select distinct model,
+    				depth,
+                    cumlift,
+                    ( 16293 * Depth / 100 * (-2 + 6 * (17 /100 * cumlift))) as ROI
+    from all_liftinfo
+    where model='Logistic'
+    order by model, cumlift desc
+    ;
+quit;
+
+proc sgplot data=ROI; 
+  title "ROI (using validation data)";
+  yaxis label=' ' grid;
+  series x=depth y=ROI / group=model markers markerattrs=(symbol=circlefilled);
+run;
+
+title;
+ods graphics off;
+
+
+
+/************************************************************************/
+/* Third part: Creating the table to score                              */
+/************************************************************************/
+
+
+
+/************************************************************************/
+/* Creation of the table after January 2014                             */
+/************************************************************************/
+%droptable(tabName=afterjan);
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE table afterjan AS 
+   SELECT t1.Customer_ID, 
+          t1.Total_Retail_Price, 
+          t2.Customer_Country, 
+          t2.Customer_Gender,
+          t2.customer_age,
+		  t2.customer_Type,
+          t3.Product_Group,
+		  t3.Product_Category, 
+          t4.Year_ID, 
+          t4.Month_Name, 
+          t1.Order_Date,
+          t1.Order_ID,
+          t1.Discount,
+		  t4.WeekDay_Name 
+      FROM order_fact t1, customer_dim t2, product_dim t3, time_dim t4
+      WHERE (t1.Customer_ID = t2.Customer_ID AND t1.Product_ID = t3.Product_ID AND t1.Order_Date = t4.Date_id) AND t1.Order_Date >= date'2014-01-01'";
+QUIT;
+
+/************************************************************************/
+/*  Create the Base table  - 2                                          */
+/************************************************************************/
+%droptable(tabName=BaseTable2);
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE BaseTable2 AS 
+   SELECT t1.Customer_ID,
+            (SUM(t1.Total_Retail_Price)) AS SUM_of_Total_Retail_Price, 
+            (MEAN(t1.Total_Retail_Price)) AS MEAN_of_Total_Retail_Price, 
+            (MAX(t1.Total_Retail_Price))  AS MAX_of_Total_Retail_Price, 
+          t1.Customer_Country,
+          (t1.customer_age -1) as age,
+          t1.Customer_Gender,
+		  t1.Customer_Type, 
+          (MEAN(t1.Discount)) AS MEAN_of_Discount1
+      FROM BeforeDec t1
+        GROUP BY t1.Customer_ID,
+               t1.Customer_Country,
+               t1.customer_age,
+			   t1.Customer_Type,
+               t1.Customer_Gender";
+QUIT;
+
+
+/************************************************************************/
+/* Turnover per year - 2 	                                        */
+/************************************************************************/
+
+%droptable(tabName=T_Y2);
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE  T_Y2 AS SELECT
+         (SUM(t1.Total_Retail_Price)) AS SUM_of_Total_Retail_Price, 
+          T1.Customer_ID, 
+          t1.Year_ID
+      FROM afterjan t1
+      GROUP BY t1.Customer_ID,
+               t1.Year_ID";
+ QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_Y2
+	OUT=  caslibr.trnst_T_Y2
+	PREFIX=_
+	NAME=Source;
+	BY Customer_ID;
+	ID Year_ID;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+
+/************************************************************************/
+/* Turnover per month - 2 	                                        */
+/************************************************************************/
+%droptable(tabName=T_M2);
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE T_M2 AS 
+   SELECT t1.Customer_ID, 
+          t1.Month_Name, 
+            (SUM(t1.Total_Retail_Price))  AS SUM_of_Total_Retail_Price
+      FROM   afterjan t1
+      GROUP BY t1.Customer_ID,
+               t1.Month_Name";
+QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_M2
+	OUT=  caslibr.trnst_T_M2
+	NAME=Source;
+	BY Customer_ID;
+	ID Month_Name;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* Turnover per weekday -2                                                 */
+/************************************************************************/
+%droptable(tabName=T_WD2);
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE T_WD2 AS 
+   SELECT t1.Customer_ID, 
+          t1.WeekDay_Name, 
+            (SUM(t1.Total_Retail_Price))  AS SUM_of_Total_Retail_Price
+      FROM   BeforeDec t1
+      GROUP BY t1.Customer_ID,
+               t1.WeekDay_Name";
+QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_WD2
+	OUT=  caslibr.trnst_T_WD2
+	NAME=Source;
+	BY Customer_ID;
+	ID WeekDay_Name;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* recency and seniority - 2                                            */
+/************************************************************************/
+%droptable(tabName=rec_old2);
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE rec_old2 AS 
+   SELECT t1.Customer_ID,
+            (MIN(t1.Order_Date))  AS MIN_of_Order_Date, 
+            (MAX(t1.Order_Date))  AS MAX_of_Order_Date
+      FROM afterjan t1
+      GROUP BY t1.Customer_ID";
+QUIT;
+
+data caslibr.rec_old2;
+set caslibr.rec_old2;
+recen = yrdif(MAX_of_Order_Date,'31DEC2017'd,'actual'); 
+Old = yrdif(MIN_of_Order_Date,'31DEC2017'd,'actual');
+run;
+
+
+/************************************************************************/
+/* Turnover per product group - 2                                       */
+/************************************************************************/
+%droptable(tabName=T_P2);
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE  T_P2 AS SELECT
+         (SUM(t1.Total_Retail_Price)) AS SUM_of_Total_Retail_Price, 
+          T1.Customer_ID, 
+          t1.Product_Group
+      FROM afterjan t1
+      GROUP BY t1.Customer_ID,
+               t1.Product_Group";
+ QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_P2
+	OUT=  caslibr.trnst_T_P2
+	PREFIX=_
+	NAME=Source;
+	BY Customer_ID;
+	ID Product_Group;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* Turnover per product Category 2                                  */
+/************************************************************************/
+%droptable(tabName=T_PC2); 
+
+PROC cas;
+fedsql.execdirect query="
+   CREATE TABLE  T_PC2 AS SELECT
+         (SUM(t1.Total_Retail_Price)) AS SUM_of_Total_Retail_Price, 
+          T1.Customer_ID, 
+          t1.Product_Category
+      FROM BeforeDec t1
+      GROUP BY t1.Customer_ID,
+               t1.Product_Category";
+ QUIT;
+
+PROC TRANSPOSE DATA=caslibr.T_PC2
+	OUT=  caslibr.trnst_T_PC2
+	PREFIX=_
+	NAME=Source;
+	BY Customer_ID;
+	ID Product_Category;
+	VAR SUM_of_Total_Retail_Price;
+RUN; QUIT;
+
+/************************************************************************/
+/* conca - 2                      					*/
+/************************************************************************/
+%droptable(tabName=conca2); 
+
+PROC SQL;
+  CREATE TABLE conca2 AS 
+   SELECT t1.Customer_ID, 
+          t1.SUM_of_Total_Retail_Price, 
+          t1.MEAN_of_Total_Retail_Price, 
+          t1.MAX_of_Total_Retail_Price, 
+          t1.Customer_Country, 
+          t1.Customer_Gender,
+		  t1.Customer_Type,
+          T1.age,
+          t1.MEAN_of_Discount1, 
+          t2._2013 AS N_4, 
+          t2._2014 AS N_3, 
+          t2._2015 AS N_2, 
+          t2._2016 AS N_1,
+          t3.August, 
+          t3.February, 
+          t3.July, 
+          t3.November, 
+          t3.October, 
+          t3.April, 
+          t3.March, 
+          t3.May, 
+          t3.December, 
+          t3.January, 
+          t3.June, 
+          t3.September,
+		  t8._Clothes,
+		  t8._Shoes,
+          T5.'_Eclipse Clothing'n AS EclipseClothing, 
+          T5.'_Eclipse Shoes'n AS EclipseShoes, 
+          T5._Orion as Orion, 
+          T5._Shoes as Shoes, 
+          T5.'_T-Shirts'n AS TShirts, 
+          T5.'_Tracker Clothes'n AS TrackerClothes, 
+          T5.'_Tracker Shoes'n AS TrackerShoes, 
+          T5.'_Orion Clothing'n AS OrionClothing, 
+          T5._Leisure as Leisure, 
+          T5._Osprey as Osprey, 
+          T5.'_Green Tomato'n AS GreenTomato, 
+          T5._LSF as LSF, 
+          T5._Knitwear as Knitwear, 
+          T5.'_Street Wear'n AS StreetWear, 
+          T5._Shorts as Shorts, 
+          T5.'_Stockings & Socks'n AS StockingsSocks, 
+          t4.recen,
+          t4.Old,
+		  t7.Monday,
+		  t7.Tuesday,
+		  t7.Wednesday,
+		  t7.Thursday,
+		  t7.Friday,
+		  t7.Saturday,
+		  t7.Sunday,
+          t6.Target
+		  
+      FROM   caslibr.BaseTable t1
+           INNER JOIN   caslibr.trnst_T_Y t2 ON (t1.Customer_ID = t2.Customer_ID)
+           INNER JOIN   caslibr.trnst_T_M t3 ON (t1.Customer_ID = t3.Customer_ID)
+     	   INNER JOIN   caslibr.rec_old T4 ON (t1.Customer_ID = t4.Customer_ID)
+     	   INNER JOIN   caslibr.trnst_T_P T5 ON (t1.Customer_ID = t5.Customer_ID)
+		   INNER JOIN   caslibr.trnst_T_PC T8 ON (t1.Customer_ID = t8.Customer_ID)
+		   INNER JOIN  	caslibr.trnst_T_WD T7 ON (t1.Customer_ID = t7.Customer_ID)
+           LEFT JOIN   caslibr.Target t6 ON (t1.Customer_ID = t6.Customer_ID);
+ QUIT;
+
+ proc casutil;
+    load data=work.conca2 casout="conca2";
+  run;
+
+/************************************************************************/
+/* Imput                                                                */
+/************************************************************************/
+
+data caslibr.Orion_Score;
+set caslibr.conca2;
+if MEAN_of_Discount1 = . THEN MEAN_of_Discount1 = 0;
+if N_1 = . THEN N_1 = 0;
+if N_2 = . THEN N_2 = 0;
+if N_3 = . THEN N_3 = 0;
+if N_4 = . THEN N_4 = 0;
+if August = . THEN August = 0;
+if February = . THEN February = 0;
+if July = . THEN July = 0;
+if November = . THEN November = 0;
+if October = . THEN October = 0;
+if April = . THEN April = 0;
+if March = . THEN March = 0;
+if May = . THEN May = 0;
+if December = . THEN December = 0;
+if January = . THEN January = 0;
+if June = . THEN June = 0;
+if September = . THEN September = 0;
+if EclipseShoes = . THEN EclipseShoes = 0;
+if _Shoes = . THEN _Shoes = 0;
+if _Clothes= . THEN _CLothes =0;
+if EclipseClothing = . THEN EclipseClothing = 0;
+if Orion= . THEN Orion = 0;
+if Shoes= . THEN Shoes = 0;
+if TShirts = . THEN TShirts = 0;
+if TrackerClothes = . THEN TrackerClothes = 0;
+if TrackerShoes = . THEN TrackerShoes = 0;
+if OrionClothing = . THEN OrionClothing = 0;
+if Leisure = . THEN Leisure = 0;
+if Osprey = . THEN Osprey = 0;
+if GreenTomato = . THEN GreenTomato = 0;
+if LSF = . THEN LSF = 0;
+if Knitwear = . THEN Knitwear = 0;
+if StreetWear = . THEN StreetWear = 0;
+if Shorts = . THEN Shorts = 0;
+if StockingsSocks = . THEN StockingsSocks = 0;
+if Monday = . THEN Monday = 0;
+if Tuesday = . THEN Tuesday = 0;
+if Wednesday = . THEN Wednesday = 0;
+if Thursday = . THEN Thursday = 0;
+if Friday = . THEN Friday = 0;
+if Saturday = . THEN Saturday = 0;
+if Sunday = . THEN Sunday = 0;
+if Target = . THEN Target = 0;
+run;
+
+
+/************************************************************************/
+/* Log		                                                            */
+/************************************************************************/
+
+data CASLIBR.Orion_Score;
+	set CASLIBR.Orion_Score;
+	data CASLIBR.Orion_DM_Log;
+	set CASLIBR.Orion_DM;
+	log_SUM_of_Total_Retail_Price=log(SUM_of_Total_Retail_Price+1);
+	log_N_4=log(N_4+1);
+	log_N_3=log(N_3+1);
+	log_N_2=log(N_2+1);
+	log_N_1=log(N_1+1);
+	log_August=log(August+1);
+	log_February=log(February+1);
+	log_July=log(July+1);
+	log_November=log(November+1);
+	log_October=log(October+1);
+	log_April=log(April+1);
+	log_March=log(March+1);
+	log_May=log(May+1);
+	log_December=log(December+1);
+	log_January=log(January+1);
+	log_June=log(June+1);
+	log_September =log(September+1);
+	log_ShoesC=log(_Shoes+1);
+	log_ClothesC=log(_Clothes+1);
+	log_EclipseShoes=log(EclipseShoes+1);
+	log_EclipseClothing=log(EclipseClothing+1);
+	log_Orion=log(Orion+1);
+	log_Shoes=log(Shoes+1);
+	log_TShirts=log(TShirts+1);
+	log_TrackerClothes=log(TrackerClothes+1);
+	log_TrackerShoes=log(TrackerShoes+1);
+	log_OrionClothing=log(OrionClothing+1);
+	log_Leisure=log(Leisure+1);
+	log_Osprey=log(Osprey+1);
+	log_GreenTomato=log(GreenTomato+1);
+	log_LSF =log(LSF+1);
+	log_Knitwear=log(Knitwear+1);
+	log_StreetWear=log(StreetWear+1);
+	log_Shorts=log(Shorts+1);
+	log_StockingsSocks=log(StockingsSocks+1);
+	log_Monday=log(Monday+1);
+	log_Tuesday=log(Tuesday+1);
+	log_Wednesday=log(Wednesday+1);
+	log_Thursday=log(Thursday+1);
+	log_Friday=log(Friday+1);
+	log_Saturday=log(Saturday+1);	
+	log_Sunday=log(Sunday+1);
+run;
+
+
+/************************************************************************/
+/* Scoring 			                                        */
+/************************************************************************/
+
+data CASLIBR.orion_scored;
+	set CASLIBR.Orion_Score;
+	%include "&Pathtolocal/score_Reg.sas";
+run;
+
+proc sort data=caslibr.orion_scored out=listefinal;
+by descending P_Target;
+run;
+
+PROC PRINT DATA=listefinal
+	(OBS=814)
+	OBS="order"
+	LABEL
+	;
+	VAR Customer_ID;
+RUN;
+
+/*************************************************************************/
+/* Terminate the specified CAS session (mySession)                       */
+/*  No reconnect is possible                                             */
+/*************************************************************************/
+/*
+cas mySession terminate;
+ 
+
